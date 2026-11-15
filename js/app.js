@@ -4,7 +4,7 @@ import { Listener } from './audio.js';
 import { importDocx, LINKTEXT } from './docx.js';
 import { nameKey, parseFilename, needsDiagram, diagramSVG } from './chords.js';
 
-const APP_VERSION = '1.0.1';
+const APP_VERSION = '1.1.0';
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const icon = (n, label = '') => `<span class="ic" aria-hidden="true">${ICONS[n] || ''}</span>${label ? `<span class="lbl">${esc(label)}</span>` : ''}`;
@@ -153,6 +153,7 @@ function leaveSong() {
   if (S.listener.active && !location.hash.startsWith('#/settings') && !location.hash.startsWith('#/song')) S.listener.stop();
   document.body.classList.remove('insong');
   window.onresize = null;
+  window.onkeydown = null;
 }
 async function keepAwake() {
   try { if ('wakeLock' in navigator) S.wake = await navigator.wakeLock.request('screen'); } catch (e) { /* ignore */ }
@@ -170,6 +171,45 @@ function lineHTML(l) {
   if (ex && ex.link) html = html.replace(esc(LINKTEXT), `<a href="${esc(ex.link)}" target="_blank" rel="noopener">${esc(LINKTEXT)}</a>`);
   return `<div class="ln k-${k}${k === 't' && isProse(t) ? ' wrap' : ''}">${html || '&nbsp;'}</div>`;
 }
+const SPEED_STEP = 2, SPEED_MIN = 1, SPEED_MAX = 80;
+const getSpeed = () => S.speeds[song.id] ?? S.settings.speed;
+function showSpeed() { const el = $('#speedv'); if (el) el.textContent = Math.round(getSpeed()); }
+function setSpeed(v) { S.speeds[song.id] = Math.round(Math.min(SPEED_MAX, Math.max(SPEED_MIN, v)) * 10) / 10; saveSpeeds(); markDirty(); showSpeed(); }
+function nudgeSpeed(d) { setSpeed(getSpeed() + d); const el = $('#speedv'); if (el) { el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); } }
+
+// Learning: while the app scrolls, a finger push forward (too slow) or pull back (too fast)
+// corrects the speed of this song, based on how far behind or ahead the sheet was.
+const L = { touching: false, autoPx: 0, movingSec: 0 };
+function setupLearning() {
+  const wrap = $('.sheetwrap');
+  L.touching = false; L.autoPx = 0; L.movingSec = 0;
+  let st0 = 0, a0 = 0, timer = 0, armed = false;
+  const finish = () => {
+    timer = 0; L.touching = false;
+    if (!armed) return; armed = false;
+    const d = (wrap.scrollTop - st0) - (L.autoPx - a0);
+    const lineH = parseFloat($('#lines')?.style.fontSize || '18') * 1.3;
+    const atEnd = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 2;
+    if (Math.abs(d) < lineH || Math.abs(d) > wrap.clientHeight * 0.8 || atEnd && d > 0) { L.movingSec = Math.min(L.movingSec, 30); return; }
+    const T = Math.min(90, Math.max(6, L.movingSec));
+    const old = getSpeed();
+    const ratio = Math.min(1.5, Math.max(0.67, 1 + 0.7 * (d / T) / (lineH * old / 60)));
+    setSpeed(old * ratio);
+    L.movingSec = 0;
+    toast(`Scroll speed ${ratio > 1 ? 'up' : 'down'} to ${Math.round(getSpeed())} for this song`, 2000);
+  };
+  wrap.addEventListener('touchstart', () => {
+    clearTimeout(timer); timer = 0;
+    if (!L.touching) { st0 = wrap.scrollTop; a0 = L.autoPx; }
+    L.touching = true;
+    armed = S.listener.active && L.movingSec >= 3;
+  }, { passive: true });
+  const settle = () => { if (!L.touching) return; clearTimeout(timer); timer = setTimeout(finish, 350); };
+  wrap.addEventListener('touchend', settle, { passive: true });
+  wrap.addEventListener('touchcancel', settle, { passive: true });
+  wrap.addEventListener('scroll', () => { if (timer) settle(); }, { passive: true });
+}
+
 function viewSong(id, setId, idx) {
   song = S.byId.get(id);
   if (!song) return go('#/');
@@ -203,12 +243,16 @@ function viewSong(id, setId, idx) {
   if (S.listener.active) { const lb = $('#listen'); lb.innerHTML = icon('listening_on'); lb.classList.add('on'); lb.setAttribute('aria-pressed', 'true'); }
   if (song.capo) capoOverlay(song.capo);
   // controls
-  const speedKey = song.id;
-  const getSpeed = () => S.speeds[speedKey] ?? S.settings.speed;
-  const showSpeed = () => { $('#speedv').textContent = getSpeed(); };
   showSpeed();
-  $('#slower').onclick = () => { S.speeds[speedKey] = Math.max(1, getSpeed() - 1); saveSpeeds(); showSpeed(); };
-  $('#faster').onclick = () => { S.speeds[speedKey] = Math.min(60, getSpeed() + 1); saveSpeeds(); showSpeed(); };
+  $('#slower').onclick = () => nudgeSpeed(-SPEED_STEP);
+  $('#faster').onclick = () => nudgeSpeed(SPEED_STEP);
+  // foot pedal (or keyboard): left/up = slower, right/down = faster
+  window.onkeydown = (e) => {
+    if (document.querySelector('.modal')) return;
+    if (['ArrowLeft', 'ArrowUp', 'PageUp'].includes(e.key)) { e.preventDefault(); nudgeSpeed(-SPEED_STEP); }
+    else if (['ArrowRight', 'ArrowDown', 'PageDown', ' ', 'Enter'].includes(e.key)) { e.preventDefault(); nudgeSpeed(SPEED_STEP); }
+  };
+  setupLearning();
   $('#tsize').onclick = async () => {
     const steps = [0.8, 0.9, 1, 1.15, 1.3, 1.5];
     const v = await dialog(`<p class="q">Text size</p><div class="row wrap">${steps.map(s => `<button class="tb ${Math.abs(s - S.settings.textScale) < 0.01 ? 'primary' : ''}" data-v="${s}">${Math.round(s * 100)}%</button>`).join('')}</div><p class="hint">100% fits the longest chord line to the screen. Larger sizes scroll sideways, lines never break.</p>`);
@@ -224,9 +268,11 @@ function viewSong(id, setId, idx) {
   $('#more').onclick = async () => {
     const v = await dialog(`<p class="q">${esc(song.title)}</p><p class="hint">Source: ${esc((song.source || []).join(', '))}</p><div class="col">
       <button class="tb" data-v="setlist">${icon('add_to_setlist', 'Add to setlist')}</button>
+      <button class="tb" data-v="speed">${icon('start_auto_scroll', 'Reset scroll speed to default')}</button>
       <button class="tb danger" data-v="delete">${icon('delete', 'Delete this song')}</button>
       <button class="tb" data-v="">${icon('cancel', 'Close')}</button></div>`);
     if (v === 'setlist') addToSetlistDialog(song.id);
+    if (v === 'speed') { delete S.speeds[song.id]; saveSpeeds(); markDirty(); showSpeed(); toast('Scroll speed reset to ' + S.settings.speed); }
     if (v === 'delete' && await confirmBox(`Are you sure? “${song.title}” will be removed from the app (your Word file stays).`)) {
       await db.deleteSong(song.id); S.songs = S.songs.filter(x => x.id !== song.id); S.byId.delete(song.id);
       S.setlists.forEach(sl => { sl.items = sl.items.filter(x => x !== song.id); }); await saveSetlists();
@@ -307,11 +353,12 @@ function startLoop() {
       if (lvl >= S.settings.threshold) S.lastLoud = now;
       const moving = S.lastLoud && now - S.lastLoud <= S.settings.hangover * 1000;
       document.body.classList.toggle('scrolling', !!moving);
-      if (moving && wrap) {
+      if (moving && wrap && !L.touching) {
         const fs = parseFloat($('#lines')?.style.fontSize || '18');
-        const pxPerSec = fs * 1.3 * (S.speeds[song.id] ?? S.settings.speed) / 60;
+        const pxPerSec = fs * 1.3 * getSpeed() / 60;
+        L.movingSec += dt;
         acc += pxPerSec * dt;
-        if (acc >= 1) { const whole = Math.floor(acc); wrap.scrollTop += whole; acc -= whole; }
+        if (acc >= 1) { const whole = Math.floor(acc); const before = wrap.scrollTop; wrap.scrollTop += whole; L.autoPx += wrap.scrollTop - before; acc -= whole; }
       }
     } else document.body.classList.remove('scrolling');
     S.raf = requestAnimationFrame(step);

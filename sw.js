@@ -1,5 +1,5 @@
 // Offline cache for the app itself. Song data lives in IndexedDB, never here.
-const CACHE = 'campfire-v1.0.1';
+const CACHE = 'campfire-v1.1.0';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'css/app.css', 'js/app.js', 'js/db.js', 'js/docx.js', 'js/chords.js', 'js/audio.js', 'js/icons.js', 'js/metrics.js',
   'fonts/LiberationMono-Regular.woff', 'fonts/LiberationMono-Bold.woff', 'img/splash.jpg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'icons/favicon-48.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting())); });
